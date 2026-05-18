@@ -41,7 +41,7 @@ chmod +x SkInstaller.sh
 ## Instalação em uma linha (recomendado)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/eltonnikecasa/Garuda-Linux-SKLauncher-Installer/main/SkInstaller.sh | bash
+curl -fsSL https://raw.githubusercontent.com/eltonnikecasa/Garuda-Linux-SKLauncher-Installer/main/SKInstaller.sh | bash
 ```
 
 ---
