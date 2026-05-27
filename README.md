@@ -1,21 +1,21 @@
-# SkInstaller
+# SKLauncher Linux Installer
 
-Instalador automático do SKlauncher para Linux (Garuda / Arch), com configuração automática de Java e criação de atalho no sistema.
+Instalador automático do SKLauncher para Linux com configuração automática de Java, download do launcher e integração com o sistema.
 
 ---
 
-## O que o script faz
+## Recursos
 
-Ao executar o `SkInstaller.sh`, ele automaticamente:
+Ao executar o script, ele automaticamente:
 
 - Verifica se Java está instalado
-- Instala Java Temurin 21 se necessário
-- Define Java 21 como padrão no sistema
-- Detecta a versão mais recente do SKlauncher
+- Instala Java 21 automaticamente se necessário
+- Define Java 21 como padrão do sistema
+- Detecta a versão mais recente do SKLauncher
 - Baixa automaticamente o launcher
-- Valida se o arquivo não está corrompido
-- Cria atalho no menu do sistema (KDE/GNOME)
-- Usa ícone padrão do Minecraft do sistema
+- Valida integridade básica do arquivo
+- Cria atalho no menu do sistema
+- Atualiza cache de aplicações do desktop
 - Executa o launcher após instalação
 
 ---
@@ -25,7 +25,7 @@ Ao executar o `SkInstaller.sh`, ele automaticamente:
 ### 1. Dar permissão de execução
 
 ```bash
-chmod +x SkInstaller.sh
+chmod +x scripts/sklauncher-installer.sh
 ```
 
 ---
@@ -33,7 +33,7 @@ chmod +x SkInstaller.sh
 ### 2. Executar
 
 ```bash
-./SkInstaller.sh
+./scripts/sklauncher-installer.sh
 ```
 
 ---
@@ -41,7 +41,7 @@ chmod +x SkInstaller.sh
 ## Instalação em uma linha (recomendado)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/eltonnikecasa/Garuda-Linux-SKLauncher-Installer/main/SKInstaller.sh | bash
+curl -fsSL https://raw.githubusercontent.com/eltonnikecasa/SKLauncher-Linux-Installer/main/scripts/sklauncher-installer.sh | bash
 ```
 
 ---
@@ -49,14 +49,14 @@ curl -fsSL https://raw.githubusercontent.com/eltonnikecasa/Garuda-Linux-SKLaunch
 ## Remover instalação
 
 ```bash
-./SkInstaller.sh -remove
+./scripts/sklauncher-installer.sh -remove
 ```
 
 Isso remove:
 
 - Launcher instalado
 - Atalho do sistema
-- Arquivos locais do SkInstaller
+- Arquivos locais do instalador
 
 O script permanece no sistema.
 
@@ -71,32 +71,58 @@ O script permanece no sistema.
 
 ---
 
-## Requisitos
+## Compatibilidade atual
 
-- Arch Linux ou derivados (Garuda Linux)
-- paru instalado
-- conexão com internet
+- Arch Linux
+- Garuda Linux
+- CachyOS
 
 ---
 
-## Compatibilidade
+## Compatibilidade planejada
+
+- Debian
+- Ubuntu
+- Linux Mint
+
+---
+
+## Compatibilidade gráfica
 
 - KDE Plasma
 - GNOME
 - Wayland
 - X11
-- Arch Linux / Garuda Linux
+
+---
+
+## Requisitos
+
+- Linux
+- conexão com internet
+
+---
+
+## Segurança
+
+O script:
+
+- Não coleta dados
+- Não executa processos ocultos
+- Não modifica arquivos pessoais do usuário
+- Usa fontes oficiais do SKLauncher
+- Instala apenas dependências necessárias
 
 ---
 
 ## Observações
 
-- O script não precisa de instalação manual de Java
-- O sistema escolhe automaticamente Java 21 (Temurin)
-- O launcher é atualizado automaticamente se necessário
+- O script automatiza toda a instalação do Java
+- O launcher é baixado automaticamente
+- O instalador foi desenvolvido para simplificar a instalação do SKLauncher no Linux
 
 ---
 
 ## Licença
 
-Uso livre para automação pessoal.
+MIT License
