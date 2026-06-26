@@ -14,6 +14,8 @@ DESKTOP_DIR="$HOME/.local/share/applications"
 DESKTOP_FILE="$DESKTOP_DIR/sklauncher-installer.desktop"
 
 JAR_FILE="$INSTALL_DIR/SKlauncher.jar"
+ICON_FILE="$INSTALL_DIR/minecraft.png"
+ICON_URL="https://raw.githubusercontent.com/eltonnikecasa/SKLauncher-Linux-Installer/main/assets/minecraft.png"
 
 TEMP_DIR="/tmp/sklauncher-installer"
 
@@ -163,6 +165,7 @@ if [[ "$1" == "-remove" || "$1" == "--remove" || "$1" == "-r" ]]; then
 
     info "Removendo instalação..."
 
+    rm -f "$ICON_FILE"
     rm -rf "$INSTALL_DIR"
     rm -f "$DESKTOP_FILE"
 
@@ -291,6 +294,24 @@ if [ "$DOWNLOAD" = true ]; then
 fi
 
 ############################################
+# BAIXAR ÍCONE
+############################################
+
+info "Baixando ícone..."
+
+if command -v curl >/dev/null 2>&1; then
+
+    curl -L -o "$ICON_FILE" "$ICON_URL"
+
+else
+
+    wget -O "$ICON_FILE" "$ICON_URL"
+
+fi
+
+success "Ícone instalado"
+
+############################################
 # CRIAR ATALHO
 ############################################
 
@@ -303,7 +324,7 @@ Type=Application
 Name=SKLauncher Minecraft
 Comment=Minecraft Launcher Installer
 Exec=java -jar "$JAR_FILE"
-Icon=minecraft
+Icon=$ICON_FILE
 Terminal=false
 Categories=Game;
 StartupNotify=true
