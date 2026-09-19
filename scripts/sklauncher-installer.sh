@@ -42,6 +42,7 @@ SKL_URL=""
 TEMURIN_ARCH=""
 GUI_AVAILABLE=false
 SUDO_KEEPALIVE_PID=""
+LOG_WINDOW_PID=""
 
 ############################################
 # CORES
@@ -148,6 +149,10 @@ trap 'on_error "$LINENO" "$?"' ERR
 cleanup() {
     if [ -n "${SUDO_KEEPALIVE_PID:-}" ]; then
         kill "$SUDO_KEEPALIVE_PID" >/dev/null 2>&1 || true
+    fi
+
+    if [ -n "${LOG_WINDOW_PID:-}" ]; then
+        kill "$LOG_WINDOW_PID" >/dev/null 2>&1 || true
     fi
 
     rm -f "$PROGRESS_FIFO" "$ASKPASS_FILE" >/dev/null 2>&1 || true
@@ -450,23 +455,47 @@ install_temurin() {
 
     [ -s "$archive" ] || fatal "O download do Temurin 21 retornou um arquivo vazio."
 
-    progress 40 "Extraindo Eclipse Temurin 21..."
+    local archive_size
+    archive_size="$(du -h "$archive" | awk '{print $1}')"
+    success "Download do Temurin concluído: $archive_size"
+
+    progress 38 "Validando pacote do Eclipse Temurin 21..."
+
+    if ! tar -tzf "$archive" >/dev/null 2>>"$LOG_FILE"; then
+        fatal "O pacote do Temurin 21 está corrompido ou incompleto."
+    fi
+
+    success "Pacote do Temurin 21 validado."
+
+    progress 42 "Preparando extração do Eclipse Temurin 21..."
 
     rm -rf "$extract_dir"
     mkdir -p "$extract_dir"
 
+    info "Diretório temporário de extração: $extract_dir"
+    info "Iniciando extração do Temurin 21. Isso pode levar alguns segundos..."
+
+    progress 45 "Extraindo Eclipse Temurin 21..."
+
     tar -xzf "$archive" -C "$extract_dir" >>"$LOG_FILE" 2>&1
 
+    success "Arquivos do Temurin 21 extraídos."
+    progress 48 "Localizando o JDK extraído..."
+
     local extracted
-    extracted="$(find "$extract_dir" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+    extracted="$(find "$extract_dir" -mindepth 1 -maxdepth 1 -type d -print -quit)"
 
     [ -n "$extracted" ] || fatal "Não foi possível localizar o JDK extraído."
+
+    info "JDK extraído encontrado em: $extracted"
+
+    progress 50 "Instalando Eclipse Temurin 21..."
 
     rm -rf "$JAVA_DIR"
     mv "$extracted" "$JAVA_DIR"
 
     if ! temurin_is_valid; then
-        fatal "O Temurin foi baixado, mas a validação do Java 21 falhou."
+        fatal "O Temurin foi baixado e extraído, mas a validação do Java 21 falhou."
     fi
 
     local version
@@ -737,20 +766,34 @@ start_log_window() {
     [ "$GUI_AVAILABLE" = true ] || return
 
     (
-        tail -n +1 -f "$LOG_FILE" 2>/dev/null |
+        tail --pid="$$" -n +1 -F "$LOG_FILE" 2>/dev/null |
+        while IFS= read -r line; do
+            line="${line//&/&amp;}"
+            line="${line//</&lt;}"
+            line="${line//>/&gt;}"
+            printf '# %s\n' "$line"
+        done |
         zenity \
-            --text-info \
-            --title="$APP_NAME — Log da instalação" \
+            --progress \
+            --pulsate \
+            --no-cancel \
+            --title="$APP_NAME — Andamento da instalação" \
             --width=760 \
-            --height=480 \
-            --font="Monospace 10" \
-            --auto-scroll \
+            --height=120 \
+            --text="Iniciando instalação..." \
             2>/dev/null || true
     ) &
 
     LOG_WINDOW_PID=$!
 }
 
+stop_log_window() {
+    if [ -n "${LOG_WINDOW_PID:-}" ]; then
+        kill "$LOG_WINDOW_PID" >/dev/null 2>&1 || true
+        wait "$LOG_WINDOW_PID" >/dev/null 2>&1 || true
+        LOG_WINDOW_PID=""
+    fi
+}
 ############################################
 # INSTALAÇÃO
 ############################################
@@ -835,8 +878,10 @@ graphical_installation() {
 
     rm -f "$PROGRESS_FIFO"
 
+    stop_log_window
+
     if [ "$worker_status" -ne 0 ]; then
-        fatal "A instalação não pôde ser concluída. Consulte o log exibido na tela."
+        fatal "A instalação não pôde ser concluída. Consulte o arquivo de log: $LOG_FILE"
     fi
 
     if [ "$zenity_status" -ne 0 ]; then
