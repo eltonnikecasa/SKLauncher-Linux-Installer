@@ -30,7 +30,6 @@ ADOPTIUM_API="https://api.adoptium.net/v3"
 
 TEMP_DIR="${TMPDIR:-/tmp}/sklauncher-installer"
 LOG_FILE="$TEMP_DIR/install.log"
-PROGRESS_FIFO="$TEMP_DIR/progress.fifo"
 ASKPASS_FILE="$TEMP_DIR/askpass.sh"
 
 DISTRO=""
@@ -98,11 +97,9 @@ progress() {
     shift
     local message="$*"
 
-    info "$message"
-
-    if [ -p "$PROGRESS_FIFO" ]; then
-        printf '%s\n# %s\n' "$percent" "$message" > "$PROGRESS_FIFO" || true
-    fi
+    # A interface nunca pode bloquear a instalação.
+    # O andamento é registrado no log e acompanhado pelo Zenity.
+    info "[$percent%] $message"
 }
 
 ############################################
@@ -155,7 +152,7 @@ cleanup() {
         kill "$LOG_WINDOW_PID" >/dev/null 2>&1 || true
     fi
 
-    rm -f "$PROGRESS_FIFO" "$ASKPASS_FILE" >/dev/null 2>&1 || true
+    rm -f "$ASKPASS_FILE" >/dev/null 2>&1 || true
 }
 
 trap cleanup EXIT
@@ -753,7 +750,7 @@ Durante a instalação serão exibidos:
 }
 
 ############################################
-# JANELA DE LOG
+# JANELA DE ANDAMENTO
 ############################################
 
 start_log_window() {
@@ -835,54 +832,13 @@ perform_installation() {
 ############################################
 
 graphical_installation() {
-    rm -f "$PROGRESS_FIFO"
-    mkfifo "$PROGRESS_FIFO"
-
+    # Sem FIFO: a interface gráfica não participa do caminho crítico.
     start_log_window
 
-    (
-        set +e
-        perform_installation
-        status=$?
-        printf '%s\n# Finalizando...\n' "100" > "$PROGRESS_FIFO" 2>/dev/null || true
-        exit "$status"
-    ) &
-
-    local worker_pid=$!
-
-    set +e
-
-    zenity \
-        --progress \
-        --title="$APP_NAME" \
-        --width=560 \
-        --height=160 \
-        --percentage=0 \
-        --auto-close \
-        --no-cancel \
-        < "$PROGRESS_FIFO" \
-        2>/dev/null
-
-    local zenity_status=$?
-
-    wait "$worker_pid"
-    local worker_status=$?
-
-    set -e
-
-    rm -f "$PROGRESS_FIFO"
+    perform_installation
 
     stop_log_window
-
-    if [ "$worker_status" -ne 0 ]; then
-        fatal "A instalação não pôde ser concluída. Consulte o arquivo de log: $LOG_FILE"
-    fi
-
-    if [ "$zenity_status" -ne 0 ]; then
-        warning "A janela de progresso foi fechada."
-    fi
 }
-
 ############################################
 # INSTALAÇÃO TERMINAL
 ############################################
