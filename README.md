@@ -144,7 +144,11 @@ O instalador detectará automaticamente o sistema e iniciará a instalação.
 Também é possível executar diretamente:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/eltonnikecasa/SKLauncher-Linux-Installer/main/scripts/sklauncher-installer.sh | bash
+rm -rf /tmp/sklauncher-installer /tmp/sklauncher-installer.sh && \
+curl -fL https://raw.githubusercontent.com/eltonnikecasa/SKLauncher-Linux-Installer/main/scripts/sklauncher-installer.sh \
+-o /tmp/sklauncher-installer.sh && \
+chmod +x /tmp/sklauncher-installer.sh && \
+/tmp/sklauncher-installer.sh
 ```
 
 > Para maior segurança, usuários que desejarem revisar o código antes da execução podem baixar o script primeiro e executá-lo localmente.
