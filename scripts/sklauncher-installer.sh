@@ -459,15 +459,7 @@ install_temurin() {
     archive_size="$(du -h "$archive" | awk '{print $1}')"
     success "Download do Temurin concluído: $archive_size"
 
-    progress 38 "Validando pacote do Eclipse Temurin 21..."
-
-    if ! tar -tzf "$archive" >/dev/null 2>>"$LOG_FILE"; then
-        fatal "O pacote do Temurin 21 está corrompido ou incompleto."
-    fi
-
-    success "Pacote do Temurin 21 validado."
-
-    progress 42 "Preparando extração do Eclipse Temurin 21..."
+    progress 40 "Preparando extração do Eclipse Temurin 21..."
 
     rm -rf "$extract_dir"
     mkdir -p "$extract_dir"
@@ -475,11 +467,13 @@ install_temurin() {
     info "Diretório temporário de extração: $extract_dir"
     info "Iniciando extração do Temurin 21. Isso pode levar alguns segundos..."
 
-    progress 45 "Extraindo Eclipse Temurin 21..."
+    progress 43 "Extraindo Eclipse Temurin 21..."
 
-    tar -xzf "$archive" -C "$extract_dir" >>"$LOG_FILE" 2>&1
+    if ! tar -xzf "$archive" -C "$extract_dir" >>"$LOG_FILE" 2>&1; then
+        fatal "Falha ao extrair o Eclipse Temurin 21. O download pode estar incompleto ou corrompido."
+    fi
 
-    success "Arquivos do Temurin 21 extraídos."
+    success "Arquivos do Temurin 21 extraídos com sucesso."
     progress 48 "Localizando o JDK extraído..."
 
     local extracted
