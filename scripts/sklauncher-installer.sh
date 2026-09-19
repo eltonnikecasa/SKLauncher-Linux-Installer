@@ -1,4 +1,3 @@
-```bash
 #!/usr/bin/env bash
 
 set -Eeuo pipefail
@@ -12,20 +11,37 @@ APP_NAME="SKLauncher Linux Installer"
 
 INSTALL_DIR="$HOME/.local/share/skinstaller"
 DESKTOP_DIR="$HOME/.local/share/applications"
-
 DESKTOP_FILE="$DESKTOP_DIR/sklauncher-installer.desktop"
 
 JAR_FILE="$INSTALL_DIR/SKlauncher.jar"
 ICON_FILE="$INSTALL_DIR/minecraft.png"
 LAUNCHER_SCRIPT="$INSTALL_DIR/sklauncher.sh"
 
+JAVA_DIR="$INSTALL_DIR/java"
+JAVA_BIN="$JAVA_DIR/bin/java"
+JAR_BIN="$JAVA_DIR/bin/jar"
+
 ICON_URL="https://raw.githubusercontent.com/eltonnikecasa/SKLauncher-Linux-Installer/main/assets/minecraft.png"
+DOWNLOAD_PAGE="https://skmedix.pl/downloads"
+FALLBACK_VERSION="3.2.18"
+
+TEMURIN_MAJOR="21"
+ADOPTIUM_API="https://api.adoptium.net/v3"
 
 TEMP_DIR="${TMPDIR:-/tmp}/sklauncher-installer"
+LOG_FILE="$TEMP_DIR/install.log"
+PROGRESS_FIFO="$TEMP_DIR/progress.fifo"
+ASKPASS_FILE="$TEMP_DIR/askpass.sh"
 
-DOWNLOAD_PAGE="https://skmedix.pl/downloads"
-
-FALLBACK_VERSION="3.2.18"
+DISTRO=""
+DISTRO_NAME=""
+DISTRO_FAMILY=""
+PKG_MANAGER=""
+LATEST_VERSION=""
+SKL_URL=""
+TEMURIN_ARCH=""
+GUI_AVAILABLE=false
+SUDO_KEEPALIVE_PID=""
 
 ############################################
 # CORES
@@ -38,37 +54,54 @@ BLUE='\033[1;34m'
 NC='\033[0m'
 
 ############################################
-# VARIÁVEIS
-############################################
-
-DISTRO=""
-DISTRO_NAME=""
-DISTRO_FAMILY=""
-PKG_MANAGER=""
-
-LATEST_VERSION=""
-SKL_URL=""
-
-GUI_AVAILABLE=false
-
-############################################
 # LOG
 ############################################
 
-info() {
-    echo -e "${BLUE}[INFO]${NC} $*"
+timestamp() {
+    date '+%H:%M:%S'
 }
 
-success() {
-    echo -e "${GREEN}[OK]${NC} $*"
+log_line() {
+    local level="$1"
+    shift
+    local message="$*"
+
+    mkdir -p "$TEMP_DIR"
+    printf '[%s] [%s] %s\n' "$(timestamp)" "$level" "$message" >> "$LOG_FILE"
+
+    case "$level" in
+        INFO)  echo -e "${BLUE}[INFO]${NC} $message" >&2 ;;
+        OK)    echo -e "${GREEN}[OK]${NC} $message" >&2 ;;
+        WARN)  echo -e "${YELLOW}[WARN]${NC} $message" >&2 ;;
+        ERROR) echo -e "${RED}[ERROR]${NC} $message" >&2 ;;
+        *)     echo "[$level] $message" >&2 ;;
+    esac
 }
 
-warning() {
-    echo -e "${YELLOW}[WARN]${NC} $*"
+info()    { log_line INFO "$@"; }
+success() { log_line OK "$@"; }
+warning() { log_line WARN "$@"; }
+error()   { log_line ERROR "$@"; }
+
+run_logged() {
+    info "Executando: $*"
+    "$@" >>"$LOG_FILE" 2>&1
 }
 
-error() {
-    echo -e "${RED}[ERROR]${NC} $*" >&2
+############################################
+# PROGRESSO
+############################################
+
+progress() {
+    local percent="$1"
+    shift
+    local message="$*"
+
+    info "$message"
+
+    if [ -p "$PROGRESS_FIFO" ]; then
+        printf '%s\n# %s\n' "$percent" "$message" > "$PROGRESS_FIFO" || true
+    fi
 }
 
 ############################################
@@ -77,17 +110,18 @@ error() {
 
 show_error() {
     local message="$1"
-
     error "$message"
 
     if command -v zenity >/dev/null 2>&1 && \
        { [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; }; then
-
         zenity \
             --error \
             --title="$APP_NAME" \
-            --width=450 \
-            --text="$message" \
+            --width=500 \
+            --text="$message
+
+Log:
+$LOG_FILE" \
             2>/dev/null || true
     fi
 }
@@ -97,14 +131,49 @@ fatal() {
     exit 1
 }
 
-trap 'fatal "A instalação foi interrompida devido a um erro inesperado na linha $LINENO."' ERR
+on_error() {
+    local line="$1"
+    local code="$2"
+
+    trap - ERR
+    fatal "A instalação foi interrompida por um erro na linha $line (código $code)."
+}
+
+trap 'on_error "$LINENO" "$?"' ERR
+
+############################################
+# LIMPEZA
+############################################
+
+cleanup() {
+    if [ -n "${SUDO_KEEPALIVE_PID:-}" ]; then
+        kill "$SUDO_KEEPALIVE_PID" >/dev/null 2>&1 || true
+    fi
+
+    rm -f "$PROGRESS_FIFO" "$ASKPASS_FILE" >/dev/null 2>&1 || true
+}
+
+trap cleanup EXIT
+
+prepare_temp() {
+    rm -rf "$TEMP_DIR"
+    mkdir -p "$TEMP_DIR"
+    : > "$LOG_FILE"
+}
+
+############################################
+# AMBIENTE GRÁFICO
+############################################
+
+has_graphical_session() {
+    [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]
+}
 
 ############################################
 # DETECTAR SISTEMA
 ############################################
 
 detect_system() {
-
     if [ ! -f /etc/os-release ]; then
         fatal "Não foi possível detectar a distribuição Linux."
     fi
@@ -114,34 +183,25 @@ detect_system() {
 
     DISTRO="${ID:-unknown}"
     DISTRO_NAME="${PRETTY_NAME:-$DISTRO}"
-
     local distro_like="${ID_LIKE:-}"
 
     case "$DISTRO" in
-
         fedora)
             DISTRO_FAMILY="fedora"
             ;;
-
-        cachyos|arch|endeavouros|manjaro)
+        cachyos|arch|endeavouros|manjaro|garuda)
             DISTRO_FAMILY="arch"
             ;;
-
         debian|ubuntu|linuxmint|pop|zorin)
             DISTRO_FAMILY="debian"
             ;;
-
         *)
             if [[ "$distro_like" == *"fedora"* ]]; then
                 DISTRO_FAMILY="fedora"
-
             elif [[ "$distro_like" == *"arch"* ]]; then
                 DISTRO_FAMILY="arch"
-
-            elif [[ "$distro_like" == *"debian"* ]] || \
-                 [[ "$distro_like" == *"ubuntu"* ]]; then
+            elif [[ "$distro_like" == *"debian"* ]] || [[ "$distro_like" == *"ubuntu"* ]]; then
                 DISTRO_FAMILY="debian"
-
             else
                 fatal "Distribuição não suportada: $DISTRO_NAME"
             fi
@@ -149,38 +209,27 @@ detect_system() {
     esac
 
     case "$DISTRO_FAMILY" in
-
         fedora)
-
             if command -v dnf5 >/dev/null 2>&1; then
                 PKG_MANAGER="dnf5"
-
             elif command -v dnf >/dev/null 2>&1; then
                 PKG_MANAGER="dnf"
-
             else
                 fatal "DNF não foi encontrado no sistema."
             fi
             ;;
-
         arch)
-
             if command -v paru >/dev/null 2>&1; then
                 PKG_MANAGER="paru"
-
             elif command -v pacman >/dev/null 2>&1; then
                 PKG_MANAGER="pacman"
-
             else
                 fatal "Pacman não foi encontrado no sistema."
             fi
             ;;
-
         debian)
-
             if command -v apt-get >/dev/null 2>&1; then
                 PKG_MANAGER="apt"
-
             else
                 fatal "APT não foi encontrado no sistema."
             fi
@@ -193,69 +242,30 @@ detect_system() {
 }
 
 ############################################
-# VALIDAR AMBIENTE GRÁFICO
+# DEPENDÊNCIA DA GUI
 ############################################
 
-has_graphical_session() {
-
-    [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]
-}
-
-############################################
-# VALIDAR SUDO
-############################################
-
-validate_sudo() {
-
-    info "Validando permissões sudo..."
-
-    if ! sudo -v; then
-        fatal "Permissões sudo são necessárias para instalar as dependências."
-    fi
-
-    success "Sudo validado"
-}
-
-############################################
-# INSTALAR ZENITY
-############################################
-
-install_zenity() {
-
+bootstrap_zenity() {
     if command -v zenity >/dev/null 2>&1; then
         GUI_AVAILABLE=true
         return
     fi
 
     if ! has_graphical_session; then
-        warning "Nenhuma sessão gráfica detectada."
-        warning "O instalador continuará pelo terminal."
+        warning "Nenhuma sessão gráfica detectada. O instalador continuará pelo terminal."
         return
     fi
 
-    info "Zenity não encontrado."
-    info "Instalando interface gráfica..."
-
-    validate_sudo
+    warning "Zenity não está instalado. A primeira autenticação poderá ocorrer no terminal somente para instalar a interface gráfica."
 
     case "$DISTRO_FAMILY" in
-
         fedora)
-
             sudo "$PKG_MANAGER" install -y zenity
             ;;
-
         arch)
-
-            if [ "$PKG_MANAGER" = "paru" ]; then
-                paru -S --needed --noconfirm zenity
-            else
-                sudo pacman -S --needed --noconfirm zenity
-            fi
+            sudo pacman -S --needed --noconfirm zenity
             ;;
-
         debian)
-
             sudo apt-get update
             sudo apt-get install -y zenity
             ;;
@@ -263,11 +273,115 @@ install_zenity() {
 
     if command -v zenity >/dev/null 2>&1; then
         GUI_AVAILABLE=true
-        success "Zenity instalado"
+        success "Zenity instalado."
     else
-        warning "Não foi possível instalar Zenity."
-        warning "Continuando pelo terminal."
+        warning "Zenity não pôde ser instalado. Continuando pelo terminal."
     fi
+}
+
+############################################
+# SENHA ADMINISTRATIVA NA INTERFACE
+############################################
+
+setup_graphical_sudo() {
+    if [ "$GUI_AVAILABLE" != true ]; then
+        info "Validando permissões administrativas..."
+        sudo -v || fatal "Permissões administrativas são necessárias."
+        return
+    fi
+
+    cat > "$ASKPASS_FILE" <<'EOF'
+#!/usr/bin/env bash
+exec zenity \
+    --password \
+    --title="SKLauncher Linux Installer" \
+    --text="Digite sua senha administrativa para continuar:"
+EOF
+
+    chmod 700 "$ASKPASS_FILE"
+
+    export SUDO_ASKPASS="$ASKPASS_FILE"
+
+    info "Solicitando autenticação administrativa..."
+
+    if ! sudo -A -v; then
+        fatal "Não foi possível validar a senha administrativa."
+    fi
+
+    success "Autenticação administrativa validada."
+
+    # Mantém o timestamp do sudo válido enquanto o instalador estiver aberto.
+    (
+        while true; do
+            sudo -n -v >/dev/null 2>&1 || exit
+            sleep 50
+        done
+    ) &
+
+    SUDO_KEEPALIVE_PID=$!
+}
+
+############################################
+# ARQUITETURA TEMURIN
+############################################
+
+detect_temurin_arch() {
+    case "$(uname -m)" in
+        x86_64|amd64)
+            TEMURIN_ARCH="x64"
+            ;;
+        aarch64|arm64)
+            TEMURIN_ARCH="aarch64"
+            ;;
+        *)
+            fatal "Arquitetura não suportada para o Temurin 21: $(uname -m)"
+            ;;
+    esac
+
+    info "Arquitetura Temurin: $TEMURIN_ARCH"
+}
+
+############################################
+# DEPENDÊNCIAS
+############################################
+
+missing_commands() {
+    local missing=()
+
+    command -v curl >/dev/null 2>&1 || missing+=("curl")
+    command -v tar >/dev/null 2>&1 || missing+=("tar")
+
+    printf '%s\n' "${missing[@]:-}"
+}
+
+install_dependencies() {
+    local missing
+    missing="$(missing_commands)"
+
+    if [ -z "$missing" ]; then
+        success "Dependências essenciais já estão instaladas."
+        return
+    fi
+
+    info "Instalando dependências ausentes: $(echo "$missing" | tr '\n' ' ')"
+
+    case "$DISTRO_FAMILY" in
+        fedora)
+            run_logged sudo "$PKG_MANAGER" install -y curl tar wget desktop-file-utils
+            ;;
+        arch)
+            run_logged sudo pacman -S --needed --noconfirm curl tar wget desktop-file-utils
+            ;;
+        debian)
+            run_logged sudo apt-get update
+            run_logged sudo apt-get install -y curl tar wget desktop-file-utils
+            ;;
+    esac
+
+    command -v curl >/dev/null 2>&1 || fatal "curl não pôde ser instalado."
+    command -v tar >/dev/null 2>&1 || fatal "tar não pôde ser instalado."
+
+    success "Dependências instaladas."
 }
 
 ############################################
@@ -275,219 +389,110 @@ install_zenity() {
 ############################################
 
 check_internet() {
-
     info "Verificando conexão com a internet..."
 
-    if command -v curl >/dev/null 2>&1; then
+    if curl \
+        --silent \
+        --fail \
+        --location \
+        --connect-timeout 10 \
+        --max-time 20 \
+        --output /dev/null \
+        "https://api.adoptium.net/"; then
 
-        if curl \
-            --silent \
-            --fail \
-            --location \
-            --connect-timeout 10 \
-            --max-time 15 \
-            --output /dev/null \
-            "$DOWNLOAD_PAGE"; then
-
-            success "Internet OK"
-            return
-        fi
-
-    elif command -v wget >/dev/null 2>&1; then
-
-        if wget \
-            --quiet \
-            --timeout=15 \
-            --spider \
-            "$DOWNLOAD_PAGE"; then
-
-            success "Internet OK"
-            return
-        fi
-
-    else
-        warning "curl/wget ainda não estão instalados."
+        success "Internet OK."
         return
     fi
 
-    fatal "Não foi possível acessar o servidor do SKLauncher. Verifique sua conexão com a internet."
+    fatal "Não foi possível acessar a internet ou a API do Adoptium."
 }
 
 ############################################
-# INSTALAR DEPENDÊNCIAS
+# TEMURIN 21
 ############################################
 
-install_dependencies() {
+temurin_is_valid() {
+    [ -x "$JAVA_BIN" ] || return 1
 
-    info "Verificando dependências..."
+    local major
+    major="$("$JAVA_BIN" -version 2>&1 | awk -F '"' '/version/ {split($2,v,"."); print v[1]; exit}')"
 
-    validate_sudo
-
-    case "$DISTRO_FAMILY" in
-
-        fedora)
-
-            sudo "$PKG_MANAGER" install -y \
-                java-21-openjdk \
-                java-21-openjdk-devel \
-                curl \
-                wget \
-                desktop-file-utils
-            ;;
-
-        arch)
-
-            if [ "$PKG_MANAGER" = "paru" ]; then
-
-                paru -S --needed --noconfirm \
-                    jdk21-openjdk \
-                    curl \
-                    wget \
-                    desktop-file-utils
-
-            else
-
-                sudo pacman -S --needed --noconfirm \
-                    jdk21-openjdk \
-                    curl \
-                    wget \
-                    desktop-file-utils
-            fi
-            ;;
-
-        debian)
-
-            sudo apt-get update
-
-            sudo apt-get install -y \
-                openjdk-21-jdk \
-                curl \
-                wget \
-                desktop-file-utils
-            ;;
-    esac
+    [ "$major" = "$TEMURIN_MAJOR" ]
 }
 
-############################################
-# DETECTAR JAVA
-############################################
-
-get_java_major_version() {
-
-    if ! command -v java >/dev/null 2>&1; then
-        echo "0"
+install_temurin() {
+    if temurin_is_valid; then
+        local version
+        version="$("$JAVA_BIN" -version 2>&1 | awk -F '"' '/version/ {print $2; exit}')"
+        success "Temurin já instalado: Java $version"
         return
     fi
 
-    java -version 2>&1 |
-        awk -F '"' '/version/ {
-            split($2, version, ".");
-            if (version[1] == "1") {
-                print version[2]
-            } else {
-                print version[1]
-            }
-            exit
-        }'
+    progress 30 "Baixando Eclipse Temurin 21..."
+
+    local archive="$TEMP_DIR/temurin21.tar.gz"
+    local extract_dir="$TEMP_DIR/temurin-extract"
+    local url
+
+    url="${ADOPTIUM_API}/binary/latest/${TEMURIN_MAJOR}/ga/linux/${TEMURIN_ARCH}/jdk/hotspot/normal/eclipse?project=jdk"
+
+    info "Fonte do Java: Eclipse Adoptium Temurin ${TEMURIN_MAJOR}"
+    info "Baixando JDK para linux/${TEMURIN_ARCH}..."
+
+    curl \
+        --fail \
+        --location \
+        --show-error \
+        --retry 3 \
+        --connect-timeout 20 \
+        --output "$archive" \
+        "$url" >>"$LOG_FILE" 2>&1
+
+    [ -s "$archive" ] || fatal "O download do Temurin 21 retornou um arquivo vazio."
+
+    progress 40 "Extraindo Eclipse Temurin 21..."
+
+    rm -rf "$extract_dir"
+    mkdir -p "$extract_dir"
+
+    tar -xzf "$archive" -C "$extract_dir" >>"$LOG_FILE" 2>&1
+
+    local extracted
+    extracted="$(find "$extract_dir" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+
+    [ -n "$extracted" ] || fatal "Não foi possível localizar o JDK extraído."
+
+    rm -rf "$JAVA_DIR"
+    mv "$extracted" "$JAVA_DIR"
+
+    if ! temurin_is_valid; then
+        fatal "O Temurin foi baixado, mas a validação do Java 21 falhou."
+    fi
+
+    local version
+    version="$("$JAVA_BIN" -version 2>&1 | awk -F '"' '/version/ {print $2; exit}')"
+
+    success "Eclipse Temurin instalado: Java $version"
 }
 
 ############################################
-# CONFIGURAR JAVA 21 NO ARCH
+# SKLAUNCHER - VERSÃO
 ############################################
 
-configure_arch_java() {
+detect_latest_version() {
+    info "Detectando versão mais recente do SKLauncher..."
 
-    [ "$DISTRO_FAMILY" = "arch" ] || return
+    local page_content
 
-    if ! command -v archlinux-java >/dev/null 2>&1; then
-        return
-    fi
-
-    local java_env
-
-    java_env="$(
-        archlinux-java status 2>/dev/null |
-        sed 's/^[[:space:]]*//' |
-        grep '^java-21-' |
-        head -n1 |
-        awk '{print $1}'
-    )"
-
-    if [ -n "$java_env" ]; then
-        info "Configurando Java 21 como padrão: $java_env"
-        sudo archlinux-java set "$java_env"
-    fi
-}
-
-############################################
-# VALIDAR JAVA
-############################################
-
-ensure_java() {
-
-    local java_major
-
-    java_major="$(get_java_major_version)"
-
-    if [ "$java_major" != "21" ]; then
-
-        warning "Java 21 não está ativo."
-
-        install_dependencies
-        configure_arch_java
-
-        java_major="$(get_java_major_version)"
-    fi
-
-    if [ "$java_major" != "21" ]; then
-        fatal "Java 21 foi instalado, mas não pôde ser ativado corretamente."
-    fi
-
-    JAVA_VERSION="$(java -version 2>&1 | awk -F '"' '/version/ {print $2; exit}')"
-
-    success "Java detectado: $JAVA_VERSION"
-}
-
-############################################
-# OBTER PÁGINA
-############################################
-
-download_page_content() {
-
-    if command -v curl >/dev/null 2>&1; then
-
+    page_content="$(
         curl \
             --fail \
             --silent \
             --show-error \
             --location \
             --connect-timeout 15 \
-            "$DOWNLOAD_PAGE"
-
-    elif command -v wget >/dev/null 2>&1; then
-
-        wget \
-            --quiet \
-            --timeout=20 \
-            -O - \
-            "$DOWNLOAD_PAGE"
-
-    else
-        return 1
-    fi
-}
-
-############################################
-# DETECTAR VERSÃO
-############################################
-
-detect_latest_version() {
-
-    info "Detectando versão mais recente do SKLauncher..."
-
-    local page_content
-
-    page_content="$(download_page_content || true)"
+            "$DOWNLOAD_PAGE" || true
+    )"
 
     LATEST_VERSION="$(
         printf '%s' "$page_content" |
@@ -498,10 +503,8 @@ detect_latest_version() {
     )"
 
     if [ -z "$LATEST_VERSION" ]; then
-
         warning "Não foi possível detectar automaticamente a versão mais recente."
-        warning "Usando versão fallback $FALLBACK_VERSION"
-
+        warning "Usando versão fallback $FALLBACK_VERSION."
         LATEST_VERSION="$FALLBACK_VERSION"
     fi
 
@@ -511,16 +514,12 @@ detect_latest_version() {
 }
 
 ############################################
-# CRIAR DIRETÓRIOS
+# DIRETÓRIOS
 ############################################
 
 create_directories() {
-
     mkdir -p "$INSTALL_DIR"
     mkdir -p "$DESKTOP_DIR"
-
-    rm -rf "$TEMP_DIR"
-    mkdir -p "$TEMP_DIR"
 }
 
 ############################################
@@ -528,26 +527,19 @@ create_directories() {
 ############################################
 
 jar_is_valid() {
-
     [ -s "$JAR_FILE" ] || return 1
+    [ -x "$JAR_BIN" ] || return 1
 
-    if command -v jar >/dev/null 2>&1; then
-        jar tf "$JAR_FILE" >/dev/null 2>&1
-    else
-        return 0
-    fi
+    "$JAR_BIN" tf "$JAR_FILE" >/dev/null 2>&1
 }
 
 ############################################
-# DOWNLOAD COM PROGRESSO
+# DOWNLOAD SKLAUNCHER
 ############################################
 
 download_launcher() {
-
     if jar_is_valid; then
-
         success "Launcher válido encontrado."
-
         return
     fi
 
@@ -555,100 +547,81 @@ download_launcher() {
 
     info "Baixando SKLauncher $LATEST_VERSION..."
 
-    if command -v curl >/dev/null 2>&1; then
-
-        curl \
-            --fail \
-            --location \
-            --show-error \
-            --progress-bar \
-            --output "$JAR_FILE" \
-            "$SKL_URL"
-
-    else
-
-        wget \
-            --show-progress \
-            -O "$JAR_FILE" \
-            "$SKL_URL"
-    fi
+    curl \
+        --fail \
+        --location \
+        --show-error \
+        --retry 3 \
+        --connect-timeout 20 \
+        --output "$JAR_FILE" \
+        "$SKL_URL" >>"$LOG_FILE" 2>&1
 
     if ! jar_is_valid; then
-
         rm -f "$JAR_FILE"
-
         fatal "O arquivo do SKLauncher baixado é inválido ou está corrompido."
     fi
 
-    success "SKLauncher baixado"
+    success "SKLauncher baixado e validado."
 }
 
 ############################################
-# BAIXAR ÍCONE
+# ÍCONE
 ############################################
 
 download_icon() {
-
     info "Baixando ícone..."
 
-    if command -v curl >/dev/null 2>&1; then
+    curl \
+        --fail \
+        --silent \
+        --show-error \
+        --location \
+        --retry 3 \
+        --output "$ICON_FILE" \
+        "$ICON_URL" >>"$LOG_FILE" 2>&1
 
-        curl \
-            --fail \
-            --silent \
-            --show-error \
-            --location \
-            --output "$ICON_FILE" \
-            "$ICON_URL"
-
-    else
-
-        wget \
-            --quiet \
-            -O "$ICON_FILE" \
-            "$ICON_URL"
-    fi
-
-    success "Ícone instalado"
+    success "Ícone instalado."
 }
 
 ############################################
-# CRIAR SCRIPT DE EXECUÇÃO
+# SCRIPT DE EXECUÇÃO
 ############################################
 
 create_launcher_script() {
-
     info "Criando inicializador..."
 
     cat > "$LAUNCHER_SCRIPT" <<EOF
 #!/usr/bin/env bash
 
+JAVA_BIN="$JAVA_BIN"
 JAR_FILE="$JAR_FILE"
 
-if [ ! -f "\$JAR_FILE" ]; then
-
+if [ ! -x "\$JAVA_BIN" ]; then
     if command -v zenity >/dev/null 2>&1; then
-        zenity \
-            --error \
-            --title="SKLauncher" \
-            --text="SKLauncher não foi encontrado.\nExecute novamente o instalador."
+        zenity --error --title="SKLauncher" --text="Java Temurin 21 não foi encontrado.\nExecute novamente o instalador."
     fi
-
     exit 1
 fi
 
-exec java -jar "\$JAR_FILE"
+if [ ! -f "\$JAR_FILE" ]; then
+    if command -v zenity >/dev/null 2>&1; then
+        zenity --error --title="SKLauncher" --text="SKLauncher não foi encontrado.\nExecute novamente o instalador."
+    fi
+    exit 1
+fi
+
+exec "\$JAVA_BIN" -jar "\$JAR_FILE"
 EOF
 
     chmod +x "$LAUNCHER_SCRIPT"
+    success "Inicializador criado."
 }
 
 ############################################
-# CRIAR DESKTOP FILE
+# DESKTOP FILE
 ############################################
 
 create_desktop_file() {
-
     info "Criando atalho do sistema..."
 
     cat > "$DESKTOP_FILE" <<EOF
@@ -665,29 +638,29 @@ StartupNotify=true
 EOF
 
     chmod +x "$DESKTOP_FILE"
+    success "Atalho criado."
 }
 
 ############################################
-# ATUALIZAR MENU
+# CACHE DO DESKTOP
 ############################################
 
 update_desktop_cache() {
-
     info "Atualizando menu de aplicações..."
 
     if command -v update-desktop-database >/dev/null 2>&1; then
-
-        update-desktop-database "$DESKTOP_DIR" \
-            >/dev/null 2>&1 || true
+        update-desktop-database "$DESKTOP_DIR" >>"$LOG_FILE" 2>&1 || true
     fi
 
     if command -v kbuildsycoca6 >/dev/null 2>&1; then
-        kbuildsycoca6 >/dev/null 2>&1 || true
+        kbuildsycoca6 >>"$LOG_FILE" 2>&1 || true
     fi
 
     if command -v kbuildsycoca5 >/dev/null 2>&1; then
-        kbuildsycoca5 >/dev/null 2>&1 || true
+        kbuildsycoca5 >>"$LOG_FILE" 2>&1 || true
     fi
+
+    success "Menu de aplicações atualizado."
 }
 
 ############################################
@@ -695,15 +668,12 @@ update_desktop_cache() {
 ############################################
 
 remove_installation() {
-
     if [ "$GUI_AVAILABLE" = true ]; then
-
         if ! zenity \
             --question \
             --title="$APP_NAME" \
-            --width=420 \
+            --width=450 \
             --text="Deseja remover o SKLauncher instalado por este instalador?"; then
-
             exit 0
         fi
     fi
@@ -718,12 +688,14 @@ remove_installation() {
     success "Remoção concluída."
 
     if [ "$GUI_AVAILABLE" = true ]; then
-
         zenity \
             --info \
             --title="$APP_NAME" \
-            --width=400 \
-            --text="SKLauncher removido com sucesso.\n\nO script do instalador foi preservado."
+            --width=420 \
+            --text="SKLauncher removido com sucesso.
+
+O script do instalador foi preservado." \
+            2>/dev/null || true
     fi
 }
 
@@ -732,89 +704,92 @@ remove_installation() {
 ############################################
 
 show_welcome() {
-
     [ "$GUI_AVAILABLE" = true ] || return
 
     zenity \
         --info \
         --title="$APP_NAME" \
-        --width=480 \
-        --height=250 \
+        --width=500 \
+        --height=300 \
         --text="<b>SKLauncher Linux Installer</b>
 
 Sistema detectado:
 <b>$DISTRO_NAME</b>
 
-Este instalador irá:
+Java:
+<b>Eclipse Temurin 21</b>
 
-• verificar as dependências
-• instalar/verificar Java 21
-• detectar a versão do SKLauncher
-• baixar o launcher oficial
-• instalar o ícone
-• criar o atalho no menu de aplicações"
+O instalador solicitará a senha administrativa agora e depois iniciará a instalação.
+
+Durante a instalação serão exibidos:
+• barra de progresso
+• log em tempo real
+• download e validação do Java
+• download e validação do SKLauncher" \
+        2>/dev/null || true
 }
 
 ############################################
-# INSTALAÇÃO INTERNA
+# JANELA DE LOG
+############################################
+
+start_log_window() {
+    [ "$GUI_AVAILABLE" = true ] || return
+
+    (
+        tail -n +1 -f "$LOG_FILE" 2>/dev/null |
+        zenity \
+            --text-info \
+            --title="$APP_NAME — Log da instalação" \
+            --width=760 \
+            --height=480 \
+            --font="Monospace 10" \
+            --auto-scroll \
+            2>/dev/null || true
+    ) &
+
+    LOG_WINDOW_PID=$!
+}
+
+############################################
+# INSTALAÇÃO
 ############################################
 
 perform_installation() {
-
-    echo "5"
-    echo "# Preparando diretórios..."
-
+    progress 5 "Preparando diretórios..."
     create_directories
 
-    echo "15"
-    echo "# Instalando e verificando dependências..."
-
+    progress 10 "Verificando dependências..."
     install_dependencies
 
-    echo "30"
-    echo "# Verificando Java 21..."
-
-    configure_arch_java
-    ensure_java
-
-    echo "40"
-    echo "# Verificando conexão com a internet..."
-
+    progress 18 "Verificando conexão com a internet..."
     check_internet
 
-    echo "50"
-    echo "# Detectando versão mais recente..."
+    progress 22 "Detectando arquitetura..."
+    detect_temurin_arch
 
+    progress 25 "Verificando Eclipse Temurin 21..."
+    install_temurin
+
+    progress 52 "Detectando versão do SKLauncher..."
     detect_latest_version
 
-    echo "60"
-    echo "# Baixando SKLauncher $LATEST_VERSION..."
-
+    progress 60 "Baixando SKLauncher $LATEST_VERSION..."
     download_launcher
 
-    echo "80"
-    echo "# Instalando ícone..."
-
+    progress 80 "Instalando ícone..."
     download_icon
 
-    echo "88"
-    echo "# Criando inicializador..."
-
+    progress 87 "Criando inicializador..."
     create_launcher_script
 
-    echo "93"
-    echo "# Criando atalho..."
-
+    progress 92 "Criando atalho..."
     create_desktop_file
 
-    echo "97"
-    echo "# Atualizando menu de aplicações..."
-
+    progress 97 "Atualizando menu de aplicações..."
     update_desktop_cache
 
-    echo "100"
-    echo "# Instalação concluída."
-
+    progress 100 "Instalação concluída."
     sleep 1
 }
 
@@ -823,28 +798,17 @@ perform_installation() {
 ############################################
 
 graphical_installation() {
+    rm -f "$PROGRESS_FIFO"
+    mkfifo "$PROGRESS_FIFO"
 
-    local fifo
-    local status_file
-
-    fifo="$TEMP_DIR/progress.fifo"
-    status_file="$TEMP_DIR/install.status"
-
-    rm -f "$fifo" "$status_file"
-
-    mkfifo "$fifo"
+    start_log_window
 
     (
         set +e
-
-        perform_installation > "$fifo"
-
+        perform_installation
         status=$?
-
-        echo "$status" > "$status_file"
-
+        printf '%s\n# Finalizando...\n' "100" > "$PROGRESS_FIFO" 2>/dev/null || true
         exit "$status"
-
     ) &
 
     local worker_pid=$!
@@ -854,12 +818,13 @@ graphical_installation() {
     zenity \
         --progress \
         --title="$APP_NAME" \
-        --width=520 \
-        --height=140 \
+        --width=560 \
+        --height=160 \
         --percentage=0 \
         --auto-close \
         --no-cancel \
-        < "$fifo"
+        < "$PROGRESS_FIFO" \
+        2>/dev/null
 
     local zenity_status=$?
 
@@ -868,11 +833,10 @@ graphical_installation() {
 
     set -e
 
-    rm -f "$fifo"
+    rm -f "$PROGRESS_FIFO"
 
     if [ "$worker_status" -ne 0 ]; then
-
-        fatal "A instalação não pôde ser concluída. Execute o instalador pelo terminal para visualizar os detalhes."
+        fatal "A instalação não pôde ser concluída. Consulte o log exibido na tela."
     fi
 
     if [ "$zenity_status" -ne 0 ]; then
@@ -885,7 +849,6 @@ graphical_installation() {
 ############################################
 
 terminal_installation() {
-
     perform_installation
 }
 
@@ -894,28 +857,30 @@ terminal_installation() {
 ############################################
 
 finish_installation() {
+    local java_version
+    java_version="$("$JAVA_BIN" -version 2>&1 | awk -F '"' '/version/ {print $2; exit}')"
 
     success "SKLauncher $LATEST_VERSION instalado com sucesso."
+    success "Java utilizado: Eclipse Temurin $java_version"
 
     if [ "$GUI_AVAILABLE" = true ]; then
-
         if zenity \
             --question \
             --title="$APP_NAME" \
-            --width=450 \
+            --width=480 \
             --text="<b>Instalação concluída!</b>
 
-SKLauncher $LATEST_VERSION foi instalado com sucesso.
+SKLauncher: <b>$LATEST_VERSION</b>
+Java: <b>Eclipse Temurin $java_version</b>
 
 Deseja executar o SKLauncher agora?" \
             --ok-label="Executar" \
-            --cancel-label="Fechar"; then
+            --cancel-label="Fechar" \
+            2>/dev/null; then
 
-            "$LAUNCHER_SCRIPT" >/dev/null 2>&1 &
+            "$LAUNCHER_SCRIPT" >>"$LOG_FILE" 2>&1 &
         fi
-
     else
-
         echo
         info "Para executar:"
         echo "$LAUNCHER_SCRIPT"
@@ -936,43 +901,21 @@ Deseja executar o SKLauncher agora?" \
 ############################################
 
 main() {
-
+    prepare_temp
     detect_system
-
-    ########################################
-    # PREPARAR GUI
-    ########################################
-
-    install_zenity
-
-    ########################################
-    # REMOÇÃO
-    ########################################
+    bootstrap_zenity
 
     case "${1:-}" in
-
         -remove|--remove|-r|remove|uninstall)
-
             remove_installation
             exit 0
             ;;
     esac
 
-    ########################################
-    # TELA INICIAL
-    ########################################
-
     show_welcome
 
-    ########################################
-    # PREPARAR TEMP
-    ########################################
-
-    mkdir -p "$TEMP_DIR"
-
-    ########################################
-    # INSTALAR
-    ########################################
+    # A senha é solicitada no início, antes da instalação.
+    setup_graphical_sudo
 
     if [ "$GUI_AVAILABLE" = true ]; then
         graphical_installation
@@ -980,12 +923,7 @@ main() {
         terminal_installation
     fi
 
-    ########################################
-    # FINALIZAR
-    ########################################
-
     finish_installation
 }
 
 main "$@"
-```
